@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::builtins;
 use crate::module::ModuleLoader;
 use crate::scope::Scope;
 use crate::value::Value;
@@ -231,6 +232,15 @@ impl Expander {
     }
 
     fn call_func(&self, name: &str, args: &[String]) -> Result<String, ExpandError> {
+        // Check builtins first
+        if builtins::is_builtin(name) {
+            let values: Vec<Value> = args.iter().map(|a| Value::String(a.clone())).collect();
+            let result = builtins::call_builtin(name, &values)
+                .map_err(|e| ExpandError::new(e.message))?;
+            return Ok(result.into_string());
+        }
+
+        // Otherwise load from disk
         let content = self.loader.load_func(name).map_err(|e| ExpandError::new(e.message))?;
 
         // Create a scope with positional arguments as %1, %2, ...
@@ -258,7 +268,7 @@ fn is_id_start(c: char) -> bool {
 }
 
 fn is_id_cont(c: char) -> bool {
-    c.is_alphanumeric()
+    c.is_alphanumeric() || c == '_'
 }
 
 // ----------------------------------------------------------------
@@ -349,10 +359,10 @@ mod tests {
 
     #[test]
     fn mixed_text_and_refs() {
-        assert_eq!(
-            expand("prefix_%name_suffix"),
-            "prefix_world_suffix"
-        );
+        // %name_suffix is a single variable name (underscore allowed)
+        // The test scope doesn't have name_suffix, so it errors
+        let err = expand_err("prefix_%name_suffix");
+        assert!(err.message.contains("%name_suffix"));
     }
 
     #[test]
@@ -365,6 +375,14 @@ mod tests {
         assert!(result.is_err());
         // It tried to load funcs/deploy
         assert!(result.unwrap_err().message.contains("funcs"));
+    }
+
+    #[test]
+    fn underscore_in_var_name() {
+        let mut s = Scope::new();
+        s.set_var("my_var", Value::String("hello".into()));
+        let e = Expander::with_dir(PathBuf::from("/tmp/donow_test"));
+        assert_eq!(e.expand("%my_var", &s).unwrap(), "hello");
     }
 
     #[test]

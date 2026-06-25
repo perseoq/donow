@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use crate::ast::*;
+use crate::builtins;
 use crate::expand::Expander;
 use crate::scope::Scope;
 use crate::value::Value;
@@ -231,8 +232,14 @@ impl<'a> Eval<'a> {
             Expr::Template { name, .. } => {
                 Err(EvalError::new(format!("template expansion not yet implemented: T<{}>", name)))
             }
-            Expr::FuncCall { name, .. } => {
-                Err(EvalError::new(format!("function call not yet implemented: F<{}>", name)))
+            Expr::FuncCall { name, args, .. } => {
+                let values: Result<Vec<Value>, _> = args.iter().map(|a| self.eval_expr(a)).collect();
+                let values = values?;
+                if builtins::is_builtin(name) {
+                    builtins::call_builtin(name, &values).map_err(|e| EvalError::new(e.message))
+                } else {
+                    Err(EvalError::new(format!("function not found: F<{}>", name)))
+                }
             }
             Expr::ClassRef { name, .. } => {
                 Err(EvalError::new(format!("class reference not yet implemented: C<{}>", name)))
@@ -519,5 +526,51 @@ mod tests {
         let mut e = Eval::new(&mut scope);
         assert!(e.eval_body(&p.blocks[0].body).is_ok());
         assert_eq!(e.scope.get_var("x"), Some(&Value::Int(20)));
+    }
+
+    // -------- Builtins via F<name> --------
+
+    #[test]
+    fn builtin_sum_via_funcall() {
+        let p = parse("t:\n    x = F<sum>(a[1, 2, 3])");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(6)));
+    }
+
+    #[test]
+    fn builtin_avg_via_funcall() {
+        let p = parse("t:\n    x = F<avg>(a[10, 20, 30])");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(20)));
+    }
+
+    #[test]
+    fn builtin_len_via_funcall() {
+        let p = parse("t:\n    x = F<len>(\"hello\")");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(5)));
+    }
+
+    #[test]
+    fn builtin_sum_with_expr_args() {
+        let p = parse("t:\n    x = F<sum>(a[1 + 2, 3 * 4])");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(15))); // 3 + 12
+    }
+
+    #[test]
+    fn builtin_echo_in_expr() {
+        let p = parse("t:\n    x = F<echo>(\"hello\")");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn builtin_unknown_errors() {
+        let p = parse("t:\n    x = F<nonexistent>()");
+        let mut scope = Scope::new();
+        let mut e = Eval::new(&mut scope);
+        let result = e.eval_body(&p.blocks[0].body);
+        assert!(result.is_err());
     }
 }
