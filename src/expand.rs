@@ -1,6 +1,6 @@
-use std::fs;
 use std::path::PathBuf;
 
+use crate::module::ModuleLoader;
 use crate::scope::Scope;
 use crate::value::Value;
 
@@ -30,21 +30,20 @@ impl std::error::Error for ExpandError {}
 // ----------------------------------------------------------------
 
 pub struct Expander {
-    donow_dir: PathBuf,
+    pub loader: ModuleLoader,
 }
 
 impl Expander {
     pub fn new() -> Self {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| ".".into());
         Expander {
-            donow_dir: PathBuf::from(home).join(".donow"),
+            loader: ModuleLoader::new(),
         }
     }
 
     pub fn with_dir(dir: PathBuf) -> Self {
-        Expander { donow_dir: dir }
+        Expander {
+            loader: ModuleLoader::with_dir(dir),
+        }
     }
 
     /// Expand all variable references, templates, functions, and classes
@@ -223,30 +222,16 @@ impl Expander {
     //  Template / Function / Class loading
     // --------------------------------------------------------
 
-    fn load_file(&self, subdir: &str, name: &str) -> Result<String, ExpandError> {
-        let path = self.donow_dir.join(subdir).join(name);
-        if !path.exists() {
-            return Err(ExpandError::new(format!(
-                "{} file not found: {}",
-                subdir,
-                path.display()
-            )));
-        }
-        fs::read_to_string(&path).map_err(|e| {
-            ExpandError::new(format!("failed to read {}: {}", path.display(), e))
-        })
-    }
-
     fn load_template(&self, name: &str) -> Result<String, ExpandError> {
-        self.load_file("templates", name)
+        self.loader.load_template(name).map_err(|e| ExpandError::new(e.message))
     }
 
     fn load_class(&self, name: &str) -> Result<String, ExpandError> {
-        self.load_file("classes", name)
+        self.loader.load_class(name).map_err(|e| ExpandError::new(e.message))
     }
 
     fn call_func(&self, name: &str, args: &[String]) -> Result<String, ExpandError> {
-        let content = self.load_file("funcs", name)?;
+        let content = self.loader.load_func(name).map_err(|e| ExpandError::new(e.message))?;
 
         // Create a scope with positional arguments as %1, %2, ...
         let mut fn_scope = Scope::new();

@@ -5,6 +5,7 @@ mod error;
 mod eval;
 mod expand;
 mod lexer;
+mod module;
 mod parser;
 mod scope;
 mod token;
