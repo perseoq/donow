@@ -57,9 +57,28 @@ impl<'a> Eval<'a> {
     }
 
     pub fn eval_body(&mut self, stmts: &[Stmt]) -> Result<(), EvalError> {
+        // Phase 1: Execute Priority blocks first
         for stmt in stmts {
-            self.eval_stmt(stmt)?;
+            if let Stmt::PriorityBlock(inner, _) = stmt {
+                self.eval_body(inner)?;
+            }
         }
+
+        // Phase 2: Execute normal statements in order
+        for stmt in stmts {
+            match stmt {
+                Stmt::PriorityBlock(_, _) | Stmt::DeferredBlock(_, _) => continue,
+                _ => self.eval_stmt(stmt)?,
+            }
+        }
+
+        // Phase 3: Execute Deferred blocks last
+        for stmt in stmts {
+            if let Stmt::DeferredBlock(inner, _) = stmt {
+                self.eval_body(inner)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -393,5 +412,112 @@ mod tests {
         let mut scope = Scope::new();
         let mut e = Eval::new(&mut scope);
         assert!(e.eval_body(&p.blocks[0].body).is_ok());
+    }
+
+    // -------- Control flow edge cases --------
+
+    #[test]
+    fn if_with_not_condition() {
+        let p = parse("t:\n    ? if !false:\n        x = 42");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn if_with_and_condition() {
+        let p = parse("t:\n    ? if 1 == 1 and 2 == 2:\n        x = 1");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn if_with_or_condition() {
+        let p = parse("t:\n    ? if 1 == 2 or 2 == 2:\n        x = 1");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn if_false_skips_body() {
+        let p = parse("t:\n    ? if 1 == 2:\n        x = 42");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), None);
+    }
+
+    #[test]
+    fn while_with_comparison_chain() {
+        let p = parse("t:\n    i = 0\n    w! $i <= 3:\n        i = $i + 2");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("i"), Some(&Value::Int(4))); // 0->2->4, stop (4 > 3)
+    }
+
+    #[test]
+    fn while_never_enters() {
+        let p = parse("t:\n    i = 10\n    w! $i < 5:\n        i = 99");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("i"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn for_over_empty_array() {
+        let p = parse("t:\n    x = 0\n    f! $i in a[]:\n        x = 1");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(0)));
+    }
+
+    #[test]
+    fn for_over_list() {
+        let p = parse("t:\n    f! $i in l[\"a\", \"b\", \"c\"]:\n        x = $i");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::String("c".into())));
+    }
+
+    #[test]
+    fn nested_if_inside_while() {
+        let p = parse("t:\n    i = 0\n    w! $i < 5:\n        ? if $i == 3:\n            x = 99\n        i = $i + 1");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Int(99)));
+        assert_eq!(s.get_var("i"), Some(&Value::Int(5)));
+    }
+
+    #[test]
+    fn for_with_variable_array() {
+        let p = parse("t:\n    arr = a[1, 2, 3]\n    sum = 0\n    f! $i in $arr:\n        sum = $sum + $i");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("sum"), Some(&Value::Int(6)));
+    }
+
+    #[test]
+    fn while_with_not_condition() {
+        let p = parse("t:\n    x = false\n    w! !$x:\n        x = true");
+        let s = eval_block(&p.blocks[0].body);
+        assert_eq!(s.get_var("x"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn priority_executes_before_normal() {
+        let p = parse("t:\n    x = 1\n    (echo priority)\n    x = 2");
+        let mut scope = Scope::new();
+        let mut e = Eval::new(&mut scope);
+        assert!(e.eval_body(&p.blocks[0].body).is_ok());
+        assert_eq!(e.scope.get_var("x"), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn deferred_executes_after_normal() {
+        let p = parse("t:\n    x = 1\n    [echo deferred]\n    x = 2");
+        let mut scope = Scope::new();
+        let mut e = Eval::new(&mut scope);
+        assert!(e.eval_body(&p.blocks[0].body).is_ok());
+        assert_eq!(e.scope.get_var("x"), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn priority_then_deferred() {
+        let p = parse("t:\n    x = 10\n    [echo deferred]\n    (echo priority)\n    x = 20");
+        let mut scope = Scope::new();
+        let mut e = Eval::new(&mut scope);
+        assert!(e.eval_body(&p.blocks[0].body).is_ok());
+        assert_eq!(e.scope.get_var("x"), Some(&Value::Int(20)));
     }
 }
